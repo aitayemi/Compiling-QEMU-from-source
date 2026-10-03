@@ -21,6 +21,7 @@ QEMU (Quick EMUlator) is a free, open-source machine emulator and virtualizer. I
   - [6.1 Linux host (KVM) — Windows 10 guest, with audio + camera](#61-linux-host-kvm--windows-10-guest-with-audio--camera)
   - [6.2 Windows host (WHPX) — Windows 10 guest, with audio + camera](#62-windows-host-whpx--windows-10-guest-with-audio--camera)
 - [7. Troubleshooting Notes](#7-troubleshooting-notes)
+- [Appendix A: Microphone Not Working in the VM](#appendix-a-microphone-not-working-in-the-vm)
 
 ---
 
@@ -505,6 +506,7 @@ cd /opt/qemu/bin
 
 - Drop `once=d,` and the CD-ROM `-drive`/`-device` pair once the OS is already installed and you no longer need the ISO.
 - `hda-micro` provides a real microphone input; `hda-duplex` only gives a line-in, which most guest OSes won't surface as a mic.
+- If the guest sees a microphone but records silence, see [Appendix A](#appendix-a-microphone-not-working-in-the-vm) — the cause is often a muted capture path on the physical host.
 - Alternative board identity (Dell instead of ASUS):
   ```
   -smbios type=1,manufacturer="Dell Inc.",product="OptiPlex 7090",version="1.0",serial="ABC123XYZ" \
@@ -557,3 +559,89 @@ When connected to the physical Linux host over SSH (e.g. via MobaXterm from a Wi
 
 **Anti-VM detection**
 With the SMBIOS spoofing shown above, even applications that won't run in s VM runs as they can't tell they are being launched in a VM.
+
+---
+
+## Appendix A: Microphone Not Working in the VM
+
+**Symptom:** the microphone shows up in the guest (e.g. in Windows Sound settings) but records nothing. QEMU reports no error — there is just no sound.
+
+**Cause found here:** the microphone was also silent on the physical host, because the capture path was muted/unboosted in the host's ALSA mixer. QEMU can only pass through what the host itself can capture, so always test the mic on the host first.
+
+> **Remote sessions:** the VM uses the audio hardware of the machine QEMU runs on. If you connect over SSH/MobaXterm, the guest gets the *host's* microphone, not the one on the PC you're sitting at. Playback from `aplay` also comes out of the host's speakers, so you can't judge a test recording by ear when remote — use the level meter in [A.3](#a3-re-test-with-the-level-meter) instead.
+
+### A.1 List the real mixer control names
+
+Control names vary by codec, so don't assume — list what your card actually exposes:
+
+```bash
+$ amixer -c 0 scontrols
+Simple mixer control 'Master',0
+Simple mixer control 'Headphone',0
+Simple mixer control 'Headphone Mic',0
+Simple mixer control 'Headphone Mic Boost',0
+Simple mixer control 'Speaker',0
+Simple mixer control 'PCM',0
+Simple mixer control 'IEC958',0
+Simple mixer control 'IEC958',1
+Simple mixer control 'IEC958',2
+Simple mixer control 'IEC958',3
+Simple mixer control 'Capture',0
+Simple mixer control 'Auto-Mute Mode',0
+Simple mixer control 'Headset Mic',0
+Simple mixer control 'Headset Mic Boost',0
+Simple mixer control 'Internal Mic',0
+Simple mixer control 'Internal Mic Boost',0
+```
+
+(Output above is from a Dell laptop with a Realtek ALC3204 codec. Use `arecord -l` to confirm which card/device number your capture hardware is.)
+
+### A.2 Unmute and boost the mic
+
+Substitute the real control names from A.1. On this laptop the built-in mic is **Internal Mic**:
+
+```bash
+amixer -c 0 sset 'Capture' cap unmute
+amixer -c 0 sset 'Capture' 80%
+amixer -c 0 sset 'Internal Mic Boost' 2
+```
+
+Notes:
+
+- `Front Mic Boost` and `Input Source` do not exist on this codec. If your `scontrols` list shows them, set them too (e.g. `amixer -c 0 sset 'Input Source' 'Internal Mic'`); otherwise skip them.
+- If you plug in a headset instead, use `Headset Mic` / `Headset Mic Boost` (or `Headphone Mic` / `Headphone Mic Boost`, depending on the jack).
+- `alsamixer -c 0` then **F4** shows the capture view graphically; channels marked `MM` are muted and can be toggled with **Space**.
+
+### A.3 Re-test with the level meter
+
+```bash
+arecord -D hw:0,0 -f cd -vv /dev/null
+```
+
+The percentage meter should go up and down as you talk or tap near the mic. If it stays at `00%`, there is still a problem on the host — keep working through A.2 (and check that a mic is plugged in if your hardware has no built-in one) before touching QEMU. Press **Ctrl+C** to stop.
+
+### A.4 Point QEMU at ALSA directly (optional)
+
+If the mic works on the host but is still silent in the VM, bypass SDL and the sound server by using the ALSA backend for the device you tested (`hw:0,0`):
+
+```
+-audiodev alsa,id=snd0,in.dev=hw:0,0,out.dev=default
+```
+
+This replaces `-audiodev sdl,id=snd0` in the launch command from [6.1](#61-linux-host-kvm--windows-10-guest-with-audio--camera). If QEMU reports the device as busy, PipeWire/PulseAudio is holding it; use `-audiodev pipewire,id=snd0` or `-audiodev pa,id=snd0` instead (run `./qemu-system-x86_64 -audiodev help` to see which backends your build supports).
+
+### A.5 Make the settings survive a reboot
+
+`amixer` changes only affect the running system. Save them so they are restored at boot:
+
+```bash
+sudo dnf install -y alsa-utils
+sudo alsactl store
+```
+
+To verify:
+
+```bash
+grep -A6 "Internal Mic Boost" /var/lib/alsa/asound.state
+systemctl status alsa-restore.service
+```
