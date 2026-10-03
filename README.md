@@ -329,8 +329,8 @@ sudo dnf install -y \
   python3-pip SDL2-devel libusb1-devel libusbx-devel usbredir-devel \
   rdma-core-devel libibverbs-devel libslirp-devel gnutls-devel nettle-devel \
   libcap-ng-devel libattr-devel pciutils-devel bzip2-devel snappy-devel \
-  libcurl-devel numactl-devel libaio-devel python3.14 python3.14-pip spice-server-devel \
-  gtk3-devel alsa-lib-devel pulseaudio-libs-devel wget
+  libcurl-devel numactl-devel libaio-devel python3.14 python3.14-pip python3.14-pip \
+  python3.14-setuptools python3.14-devel spice-server-devel gtk3-devel alsa-lib-devel pulseaudio-libs-devel wget
 ```
 
 Switch the active `python3` to 3.14 (needed since some build utilities require 3.12+):
