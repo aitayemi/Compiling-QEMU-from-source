@@ -369,7 +369,7 @@ tar czf ~/qemu-linux.tgz ./opt/qemu
 ```
 
 Copy `qemu-linux.tgz` to another Linux host to deploy the build.
-
+NOTE: if you want to compile QEMU for all supported platforms (POWER/PPC, SPARC, etc), remove (–target-list=x86_64-softmmu) and add --disable-werror to the configure command 
 ---
 
 ## 4. Compiling QEMU Natively on Ubuntu
