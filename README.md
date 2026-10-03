@@ -447,8 +447,8 @@ cd /
 tar czf ~/qemu-linux.tgz ./opt/qemu
 ```
 
-Copy `qemu-linux.tgz` to another Linux host as needed.
-
+- NOTE: Copy `qemu-linux.tgz` to another Linux host as needed.
+- NOTE: If you want to compile QEMU for all supported platforms (POWER/PPC, SPARC, etc), remove (–target-list=x86_64-softmmu) and add --disable-werror to the configure command. 
 ---
 
 ## 5. Camera Passthrough Setup (Host)
