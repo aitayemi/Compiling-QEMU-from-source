@@ -329,7 +329,7 @@ sudo dnf install -y \
   python3-pip SDL2-devel libusb1-devel libusbx-devel usbredir-devel \
   rdma-core-devel libibverbs-devel libslirp-devel gnutls-devel nettle-devel \
   libcap-ng-devel libattr-devel pciutils-devel bzip2-devel snappy-devel \
-  libcurl-devel numactl-devel libaio-devel python3.14 spice-server-devel \
+  libcurl-devel numactl-devel libaio-devel python3.14 python3.14-pip spice-server-devel \
   gtk3-devel alsa-lib-devel pulseaudio-libs-devel wget
 ```
 
