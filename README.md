@@ -133,7 +133,7 @@ DEBIAN_FRONTEND=noninteractive sudo -E apt install -y \
 cd
 git clone https://github.com/mxe/mxe.git
 cd mxe/
-make -j$(nproc) JOBS=$(nproc) MXE_TARGETS=x86_64-w64-mingw32.static glib gtk3 pixman sdl2 openssl zlib jpeg opus orc libusb1 lz4
+make -j$(nproc) JOBS=$(nproc) MXE_TARGETS=x86_64-w64-mingw32.static glib gtk3 pixman sdl2 openssl zlib jpeg opus libusb1 lz4
 make MXE_TARGETS='x86_64-w64-mingw32.static' lz4
 
 echo 'export PATH="/home/ubuntu/mxe/usr/bin:$PATH"' >> ~/.bashrc
