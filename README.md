@@ -122,7 +122,7 @@ DEBIAN_FRONTEND=noninteractive sudo -E apt install -y \
   p7zip-full patch perl pkg-config python3 python3-mako python3-pkg-resources \
   ruby sed unzip wget xz-utils g++-multilib python-is-python3 python3-venv \
   vim meson libusb-1.0-0-dev libibverbs-dev librdmacm-dev libcacard-dev \
-  libusbredirparser-dev
+  libusbredirparser-dev cmake libffi-dev scons
 ```
 
 > If prompted for keyboard layout: enter `35` (English US) or `34` (English UK) for country, then `1` (English US) for keyboard layout.
