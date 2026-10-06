@@ -64,7 +64,11 @@ sudo chmod u+s /usr/libexec/qemu-bridge-helper
 ### 2.1 Create the Ubuntu build VM
 
 ```bash
-mkdir /VMs && cd /VMs
+sudo usermod -aG libvirt $USER
+newgrp libvirt
+sudo dnf install -y cloud-init
+
+sudo mkdir /VMs && sudo chown $USER && cd /VMs
 wget https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64.img -O compiler.qcow2
 
 # The base image is only ~3.5G — grow it
@@ -72,22 +76,27 @@ qemu-img resize compiler.qcow2 30g
 
 cat >> user-data << 'EOF'
 #cloud-config
-user: ubuntu
-password: xxxxx123!
-chpasswd: { expire: False }
-ssh_pwauth: True
-# Automatically updates the repositories and installs ping on first boot
+users:
+  - name: ubuntu
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: false
+    plain_text_passwd: 'xxxxx123!'
+
+ssh_pwauth: true
+
+# Automatically updates the repos and installs ping on first boot packages:
 packages:
   - iputils-ping
+  - xterm
 EOF
 
-sudo usermod -aG libvirt $USER
-newgrp libvirt
+sudo cloud-init schema -c /VMs/user-data
+touch meta-data
+sudo chmod 755 /VMs
+sudo chmod 644 /VMs/user-data /VMs/meta-data
 
-sudo virt-install --name compiler --memory 8192 --vcpus 4 \
-  --disk compiler.qcow2,format=qcow2 --os-variant ubuntu24.04 \
-  --import --graphics none --network default \
-  --cloud-init user-data=user-data
+sudo virt-install --name compiler --memory 8192 --vcpus 4   --disk compiler.qcow2,format=qcow2 --os-variant ubuntu24.04   --import --graphics none --network default   --cloud-init user-data=/VMs/user-data,meta-data=/VMs/meta-data
 ```
 
 Log in with the credentials from `user-data`, then confirm the OS version:
@@ -97,13 +106,17 @@ cat /etc/os-release | grep VERSION=
 # VERSION="24.04.5 LTS (Noble Numbat)"
 ```
 
-Optional shell quality-of-life tweaks:
+Optional shell quality-of-life tweaks - otherwise text don't wrap to next line in the console:
 
 ```bash
-echo "export TERM=vt220" >> ~/.bashrc
-echo "set enable-bracketed-paste off" >> ~/.bashrc
-echo 'export PS1="[\u@\h \W]\$"' >> ~/.bashrc
-echo "PS2='>'" >> ~/.bashrc
+sudo apt install -y xterm
+resize
+cat >> ~/.bashrc << 'EOF'
+case "$(tty)" in
+    /dev/ttyS0) resize >/dev/null ;;
+esac
+EOF
+
 source ~/.bashrc
 ```
 
@@ -133,8 +146,7 @@ DEBIAN_FRONTEND=noninteractive sudo -E apt install -y \
 cd
 git clone https://github.com/mxe/mxe.git
 cd mxe/
-make -j$(nproc) JOBS=$(nproc) MXE_TARGETS=x86_64-w64-mingw32.static glib gtk3 pixman sdl2 openssl zlib jpeg opus libusb1 lz4
-make MXE_TARGETS='x86_64-w64-mingw32.static' lz4
+make -j$(nproc) JOBS=$(nproc) MXE_TARGETS=x86_64-w64-mingw32.static glib gtk3 pixman sdl2 openssl zlib jpeg opus libusb1
 
 echo 'export PATH="/home/ubuntu/mxe/usr/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
@@ -162,73 +174,21 @@ cpu = 'x86_64'
 endian = 'little'
 EOF
 
-meson setup build --cross-file mxe-cross.txt \
-  --prefix=/home/ubuntu/mxe/usr/x86_64-w64-mingw32.static --default-library=static
+meson setup build --cross-file mxe-cross.txt --prefix=/home/ubuntu/mxe/usr/x86_64-w64-mingw32.static --default-library=static
 ninja -C build install
 x86_64-w64-mingw32.static-pkg-config --modversion slirp
 ```
 
-### 2.5 Build spice-protocol
+Sanity-check every dependency before building QEMU:
 
 ```bash
-cd ~
-git clone https://gitlab.freedesktop.org/spice/spice-protocol.git
-cd spice-protocol
-meson setup build --prefix=/tmp/spice-protocol-install
-ninja -C build install
-
-cp -r /tmp/spice-protocol-install/include/spice-1 ~/mxe/usr/x86_64-w64-mingw32.static/include/
-cp /tmp/spice-protocol-install/share/pkgconfig/spice-protocol.pc ~/mxe/usr/x86_64-w64-mingw32.static/lib/pkgconfig/
-sed -i "s|/tmp/spice-protocol-install|/home/ubuntu/mxe/usr/x86_64-w64-mingw32.static|g" \
-  ~/mxe/usr/x86_64-w64-mingw32.static/lib/pkgconfig/spice-protocol.pc
-x86_64-w64-mingw32.static-pkg-config --modversion spice-protocol
-```
-
-### 2.6 Build orc
-
-```bash
-cd ~
-git clone https://gitlab.freedesktop.org/gstreamer/orc.git
-cd orc
-meson setup build --cross-file ~/libslirp/mxe-cross.txt \
-  --prefix=/home/ubuntu/mxe/usr/x86_64-w64-mingw32.static --default-library=static
-ninja -C build install
-x86_64-w64-mingw32.static-pkg-config --modversion orc-0.4
-```
-
-Sanity-check every dependency before tackling spice-server, since a missed one there is a far more expensive failure to debug:
-
-```bash
-for pkg in openssl zlib libjpeg opus orc-0.4 glib-2.0 pixman-1 liblz4; do
+for pkg in openssl zlib libjpeg opus glib-2.0 pixman-1 liblz4; do
   echo -n "$pkg: "
   x86_64-w64-mingw32.static-pkg-config --modversion "$pkg" 2>&1
 done
 ```
 
-### 2.7 Build spice-server
-
-```bash
-cd ~
-sed -i "/^c = /a cpp = 'x86_64-w64-mingw32.static-g++'" ~/libslirp/mxe-cross.txt
-cat ~/libslirp/mxe-cross.txt
-
-# The build might fail partway — keep going
-wget https://www.spice-space.org/download/releases/spice-server/spice-0.15.2.tar.bz2
-tar xjf spice-0.15.2.tar.bz2
-cd ~/spice-0.15.2
-rm -rf build
-
-meson setup build --cross-file ~/libslirp/mxe-cross.txt \
-  --prefix=/home/ubuntu/mxe/usr/x86_64-w64-mingw32.static --default-library=static \
-  -Dgstreamer=no -Dlz4=true -Dsasl=false -Dsmartcard=disabled -Dmanual=false \
-  -Dstatistics=false -Dopus=enabled -Dspice-common:tests=false -Dtests=false \
-  -Dc_link_args=-Wl,--allow-multiple-definition
-
-ninja -C build install
-x86_64-w64-mingw32.static-pkg-config --modversion spice-server
-```
-
-### 2.8 Build QEMU itself (cross-compiled for Windows)
+### 2.6 Build QEMU itself (cross-compiled for Windows and only x86-64 platform support)
 
 ```bash
 cd
@@ -236,6 +196,37 @@ git clone https://git.qemu.org/git/qemu.git --depth 1
 cd qemu
 git submodule init
 git submodule update --recursive
+```
+
+memmem() is a GNU/BSD extension that mingw-w64 doesn't provide. tests/qtest/pxe-test.c calls it (in an s390-only helper), and with -Werror the implicit declaration becomes a hard error. The failing object is a qtest test program, not QEMU itself, so you don't need it for a working Windows build. So we patch the test (by adding a small fallback above the function that fails) otherwise make will fail.
+
+```bash
+cd ~/qemu
+cp tests/qtest/pxe-test.c tests/qtest/pxe-test.c.orig
+
+cat > /tmp/memmem-shim.txt <<'EOF'
+#ifdef _WIN32
+/* mingw-w64 has no memmem(); minimal fallback */
+static void *memmem(const void *h, size_t hl, const void *n, size_t nl)
+{
+    const char *p = h;
+    if (nl == 0) {
+        return (void *)h;
+    }
+    for (; hl >= nl; p++, hl--) {
+        if (memcmp(p, n, nl) == 0) {
+            return (void *)p;
+        }
+    }
+    return NULL;
+}
+#endif
+
+EOF
+
+awk 'BEGIN{done=0}
+     !done && /^static/ { while ((getline line < "/tmp/memmem-shim.txt") > 0) print line; done=1 }
+     { print }' tests/qtest/pxe-test.c.orig > tests/qtest/pxe-test.c
 
 rm -rf build-win64
 mkdir build-win64 && cd ~/qemu/build-win64
@@ -245,23 +236,22 @@ mkdir build-win64 && cd ~/qemu/build-win64
   --target-list=x86_64-softmmu \
   --extra-cflags="-D__USE_MINGW_ANSI_STDIO=1 -Wno-error=format -Wno-error=suggest-attribute=format -Wno-error=format-extra-args -DLIBSLIRP_STATIC" \
   --extra-ldflags="-lstdc++" \
-  --enable-slirp --enable-spice --enable-gtk --enable-vnc --enable-whpx \
+  --enable-slirp --disable-spice --enable-gtk --enable-vnc --enable-whpx \
   --audio-drv-list=dsound,sdl --enable-libusb --enable-sdl \
   --prefix=~/qemu-win
 
 make -j$(nproc)
 make install
+
+NOTE: alternatively, instead of only x86-64 suport, you may build a small list of target platforms including IBM POWER and ARM - allows to run a AIX v7.2 VM on a Windows host for example:
+../configure --cross-prefix=x86_64-w64-mingw32.static-   --target-list=x86_64-softmmu,aarch64-softmmu,arm-softmmu,ppc64-softmmu,ppc-softmmu --extra-cflags="-D__USE_MINGW_ANSI_STDIO=1 -Wno-error=format -Wno-error=suggest-attribute=format -Wno-error=format-extra-args -Wno-error=maybe-uninitialized -DLIBSLIRP_STATIC" --extra-ldflags="-lstdc++" --enable-slirp --disable-spice --enable-gtk --enable-vnc --enable-whpx   --audio-drv-list=dsound,sdl --enable-libusb --enable-sdl   --prefix=~/qemu-win
+
 ```
 
-### 2.9 Package the Windows build
+
+### 2.7 Package the Windows build
 
 ```bash
-cd ~/qemu-win
-find ./ -iname '*.exe' -exec cp {} ~/qemu-win/ \;
-mkdir ~/qemu-win/share
-cp ../pc-bios/*.bin ../pc-bios/*.rom ./pc-bios/*x86_64*.fd ~/qemu-win/share/
-cd ~
-
 # Optional: drop support for architectures you won't emulate, to shrink the package
 cd ~/qemu-win/
 find ./ -iname '*aarch64*' -exec rm -f {} \;
@@ -377,26 +367,33 @@ tar czf ~/qemu-linux.tgz ./opt/qemu
 ```bash
 mkdir /VMs && cd /VMs
 wget https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64.img -O compiler.qcow2
+
+# The base image is only ~3.5G — grow it
 qemu-img resize compiler.qcow2 30g
 
 cat >> user-data << 'EOF'
 #cloud-config
-user: ubuntu
-password: xxxxx123!
-chpasswd: { expire: False }
-ssh_pwauth: True
+users:
+  - name: ubuntu
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: false
+    plain_text_passwd: 'xxxxx123!'
+
+ssh_pwauth: true
+
+# Automatically updates the repos and installs ping on first boot packages:
 packages:
   - iputils-ping
+  - xterm
 EOF
 
-sudo usermod -aG libvirt $USER
-newgrp libvirt
+sudo cloud-init schema -c /VMs/user-data
+touch meta-data
+sudo chmod 755 /VMs
+sudo chmod 644 /VMs/user-data /VMs/meta-data
 
-sudo virt-install --name compiler --memory 8192 --vcpus 4 \
-  --disk compiler.qcow2,format=qcow2 --os-variant ubuntu24.04 \
-  --import --graphics none --network default \
-  --cloud-init user-data=user-data
-```
+sudo virt-install --name compiler --memory 8192 --vcpus 4   --disk compiler.qcow2,format=qcow2 --os-variant ubuntu24.04   --import --graphics none --network default   --cloud-init user-data=/VMs/user-data,meta-data=/VMs/meta-data
 
 Log in, then install build dependencies:
 
@@ -644,4 +641,58 @@ To verify:
 ```bash
 grep -A6 "Internal Mic Boost" /var/lib/alsa/asound.state
 systemctl status alsa-restore.service
+```
+
+
+
+### 2.5 Build spice-protocol - no need since it only applies to Linux
+
+```bash
+cd ~
+git clone https://gitlab.freedesktop.org/spice/spice-protocol.git
+cd spice-protocol
+meson setup build --prefix=/tmp/spice-protocol-install
+ninja -C build install
+
+cp -r /tmp/spice-protocol-install/include/spice-1 ~/mxe/usr/x86_64-w64-mingw32.static/include/
+cp /tmp/spice-protocol-install/share/pkgconfig/spice-protocol.pc ~/mxe/usr/x86_64-w64-mingw32.static/lib/pkgconfig/
+sed -i "s|/tmp/spice-protocol-install|/home/ubuntu/mxe/usr/x86_64-w64-mingw32.static|g" \
+  ~/mxe/usr/x86_64-w64-mingw32.static/lib/pkgconfig/spice-protocol.pc
+x86_64-w64-mingw32.static-pkg-config --modversion spice-protocol
+```
+
+### 2.7 Build spice-server - no need since it only applies to Linux
+
+```bash
+cd ~
+sed -i "/^c = /a cpp = 'x86_64-w64-mingw32.static-g++'" ~/libslirp/mxe-cross.txt
+cat ~/libslirp/mxe-cross.txt
+
+# The build might fail partway — keep going
+wget https://www.spice-space.org/download/releases/spice-server/spice-0.15.2.tar.bz2
+tar xjf spice-0.15.2.tar.bz2
+cd ~/spice-0.15.2
+rm -rf build
+
+meson setup build --cross-file ~/libslirp/mxe-cross.txt \
+  --prefix=/home/ubuntu/mxe/usr/x86_64-w64-mingw32.static --default-library=static \
+  -Dgstreamer=no -Dlz4=true -Dsasl=false -Dsmartcard=disabled -Dmanual=false \
+  -Dstatistics=false -Dopus=enabled -Dspice-common:tests=false -Dtests=false \
+  -Dc_link_args=-Wl,--allow-multiple-definition
+
+ninja -C build install
+x86_64-w64-mingw32.static-pkg-config --modversion spice-server
+```
+
+
+### 2.5 Build orc - not needed since it is used by Spice and GStreamer
+
+```bash
+cd ~
+git clone https://gitlab.freedesktop.org/gstreamer/orc.git
+cd orc
+meson setup build --cross-file ~/libslirp/mxe-cross.txt \
+  --prefix=/home/ubuntu/mxe/usr/x86_64-w64-mingw32.static --default-library=static
+ninja -C build install
+x86_64-w64-mingw32.static-pkg-config --modversion orc-0.4
 ```
