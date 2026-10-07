@@ -198,72 +198,128 @@ git submodule init
 git submodule update --recursive
 ```
 
-memmem() is a GNU/BSD extension that mingw-w64 doesn't provide. tests/qtest/pxe-test.c calls it (in an s390-only helper), and with -Werror the implicit declaration becomes a hard error. The failing object is a qtest test program, not QEMU itself, so you don't need it for a working Windows build. So we patch the test (by adding a small fallback above the function that fails) otherwise make will fail.
+`memmem()` is a GNU/BSD extension that mingw-w64 doesn't provide. `tests/qtest/pxe-test.c` calls it (in an s390-only helper), and because the build uses `-Werror`, the implicit declaration becomes a hard error. The failing object is a qtest test program, not QEMU itself, so it isn't needed for a working Windows build — but `make` (and therefore `make install`) won't complete unless the test compiles. The fix is to patch the test by adding a small `memmem()` fallback right after the last `#include`.
+
+Run this from the source root (`~/qemu`). The script is idempotent: it does nothing if the patch has already been applied.
 
 ```bash
 cd ~/qemu
-cp tests/qtest/pxe-test.c tests/qtest/pxe-test.c.orig
-
-cat > /tmp/memmem-shim.txt <<'EOF'
+python3 - <<'PYEOF'
+p = 'tests/qtest/pxe-test.c'
+s = open(p).read()
+if 'win32_memmem_fallback' not in s:
+    helper = '''
 #ifdef _WIN32
-/* mingw-w64 has no memmem(); minimal fallback */
-static void *memmem(const void *h, size_t hl, const void *n, size_t nl)
+/* win32_memmem_fallback: MinGW has no memmem() */
+static void *memmem(const void *hay, size_t hlen,
+                    const void *needle, size_t nlen)
 {
-    const char *p = h;
-    if (nl == 0) {
-        return (void *)h;
+    const unsigned char *h = hay;
+
+    if (nlen == 0) {
+        return (void *)hay;
     }
-    for (; hl >= nl; p++, hl--) {
-        if (memcmp(p, n, nl) == 0) {
-            return (void *)p;
+    for (size_t i = 0; hlen >= nlen && i <= hlen - nlen; i++) {
+        if (memcmp(h + i, needle, nlen) == 0) {
+            return (void *)(h + i);
         }
     }
     return NULL;
 }
 #endif
+'''
+    idx = s.rfind('#include')
+    eol = s.index('\n', idx) + 1
+    s = s[:eol] + helper + s[eol:]
+    open(p, 'w').write(s)
+PYEOF
+```
 
-EOF
+To undo the patch at any time: `git checkout tests/qtest/pxe-test.c`.
 
-awk 'BEGIN{done=0}
-     !done && /^static/ { while ((getline line < "/tmp/memmem-shim.txt") > 0) print line; done=1 }
-     { print }' tests/qtest/pxe-test.c.orig > tests/qtest/pxe-test.c
+Now configure and build. `$HOME` is used instead of `~` because the shell does not expand a tilde that follows `--prefix=`.
 
+```bash
 rm -rf build-win64
 mkdir build-win64 && cd ~/qemu/build-win64
 
 ../configure \
   --cross-prefix=x86_64-w64-mingw32.static- \
   --target-list=x86_64-softmmu \
-  --extra-cflags="-D__USE_MINGW_ANSI_STDIO=1 -Wno-error=format -Wno-error=suggest-attribute=format -Wno-error=format-extra-args -DLIBSLIRP_STATIC" \
+  --extra-cflags="-D__USE_MINGW_ANSI_STDIO=1 -Wno-error=format -Wno-error=suggest-attribute=format -Wno-error=format-extra-args -Wno-error=maybe-uninitialized -DLIBSLIRP_STATIC" \
   --extra-ldflags="-lstdc++" \
   --enable-slirp --disable-spice --enable-gtk --enable-vnc --enable-whpx \
   --audio-drv-list=dsound,sdl --enable-libusb --enable-sdl \
-  --prefix=~/qemu-win
+  --prefix=$HOME/qemu-win
 
 make -j$(nproc)
 make install
-
-NOTE: alternatively, instead of only x86-64 suport, you may build a small list of target platforms including IBM POWER and ARM - allows to run a AIX v7.2 VM on a Windows host for example:
-../configure --cross-prefix=x86_64-w64-mingw32.static-   --target-list=x86_64-softmmu,aarch64-softmmu,arm-softmmu,ppc64-softmmu,ppc-softmmu --extra-cflags="-D__USE_MINGW_ANSI_STDIO=1 -Wno-error=format -Wno-error=suggest-attribute=format -Wno-error=format-extra-args -Wno-error=maybe-uninitialized -DLIBSLIRP_STATIC" --extra-ldflags="-lstdc++" --enable-slirp --disable-spice --enable-gtk --enable-vnc --enable-whpx   --audio-drv-list=dsound,sdl --enable-libusb --enable-sdl   --prefix=~/qemu-win
-
 ```
 
+#### 2.6.1 Alternative: build only the target platforms you need
+
+Instead of x86-64 only, you can build a selected list of target platforms. This is useful, for example, to run an IBM POWER (AIX 7.2) or ARM VM on a Windows host. Only `--target-list` differs from the command above; everything else (patch, flags, `make`, `make install`) is identical.
+
+**Small list** (x86-64, ARM and IBM POWER):
+
+```bash
+../configure \
+  --cross-prefix=x86_64-w64-mingw32.static- \
+  --target-list=x86_64-softmmu,aarch64-softmmu,arm-softmmu,ppc64-softmmu,ppc-softmmu \
+  --extra-cflags="-D__USE_MINGW_ANSI_STDIO=1 -Wno-error=format -Wno-error=suggest-attribute=format -Wno-error=format-extra-args -Wno-error=maybe-uninitialized -DLIBSLIRP_STATIC" \
+  --extra-ldflags="-lstdc++" \
+  --enable-slirp --disable-spice --enable-gtk --enable-vnc --enable-whpx \
+  --audio-drv-list=dsound,sdl --enable-libusb --enable-sdl \
+  --prefix=$HOME/qemu-win
+```
+
+**Larger list** (adds i386, RISC-V, s390x, m68k and MIPS):
+
+```bash
+../configure \
+  --cross-prefix=x86_64-w64-mingw32.static- \
+  --target-list=x86_64-softmmu,i386-softmmu,aarch64-softmmu,arm-softmmu,riscv64-softmmu,riscv32-softmmu,ppc64-softmmu,ppc-softmmu,s390x-softmmu,m68k-softmmu,mips64el-softmmu \
+  --extra-cflags="-D__USE_MINGW_ANSI_STDIO=1 -Wno-error=format -Wno-error=suggest-attribute=format -Wno-error=format-extra-args -Wno-error=maybe-uninitialized -DLIBSLIRP_STATIC" \
+  --extra-ldflags="-lstdc++" \
+  --enable-slirp --disable-spice --enable-gtk --enable-vnc --enable-whpx \
+  --audio-drv-list=dsound,sdl --enable-libusb --enable-sdl \
+  --prefix=$HOME/qemu-win
+```
+
+Then build and install as before:
+
+```bash
+make -j$(nproc)
+make install
+```
+
+> Building fewer targets shortens the build and shrinks the package. If you built a larger list and later find you don't need some of it, you can also trim the installed files as described in 2.7.
 
 ### 2.7 Package the Windows build
 
-```bash
-# Optional: drop support for architectures you won't emulate, to shrink the package
-cd ~/qemu-win/
-find ./ -iname '*aarch64*' -exec rm -f {} \;
-find ./ -iname '*riscv*' -exec rm -f {} \;
-find ./ -iname '*loongarch64*' -exec rm -f {} \;
+Optionally, remove the binaries, firmware and data files of architectures you won't emulate. This only matters if you built more targets than you need; if you used the small list or x86-64 only, there is nothing to delete. Adjust the patterns to match what you built — for example, with the larger list above, to keep only x86-64, ARM, POWER and m68k:
 
-# Archive for transfer to a Windows host
+```bash
+cd ~/qemu-win
+for arch in s390 i386 riscv mips; do
+  find ./ -iname "*${arch}*" -exec rm -f {} \;
+done
+```
+
+The patterns are quoted so the shell doesn't expand them before `find` sees them. If `make install` was run with `sudo`, the installed files are owned by root and the `rm` needs `sudo` too — running `make install` as your normal user (as above) avoids this, since the prefix is inside your home directory.
+
+Archive the directory for transfer to a Windows host:
+
+```bash
+# zip is the most convenient format on Windows (install it with: sudo apt install -y zip)
 cd
+zip -r ~/qemu-win.zip ./qemu-win
+
+# or, as a gzipped tarball (Windows 10+ can extract this with its built-in tar)
 tar czf ~/qemu-win.tgz ./qemu-win
 ```
 
-Transfer `qemu-win.tgz` to your Windows host, extract it into a folder such as `C:\qemu-win\`, and run `qemu-system-x86_64.exe` from there.
+Transfer the archive to your Windows host, extract it into a folder such as `C:\qemu-win\`, and run `qemu-system-x86_64.exe` (or the binary for whichever target you built) from there.
 
 ---
 
